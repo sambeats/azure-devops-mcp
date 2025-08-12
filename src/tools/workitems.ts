@@ -10,6 +10,10 @@ import { z } from "zod";
 import { batchApiVersion, markdownCommentsApiVersion, getEnumKeys, safeEnumConvert } from "../utils.js";
 
 const WORKITEM_TOOLS = {
+  get_attachments: "wit_get_attachments",
+  download_work_item_attachments: "wit_download_work_item_attachments",
+  upload_attachment_from_path: "wit_upload_attachment_from_path",
+  delete_attachment: "wit_delete_attachment",
   my_work_items: "wit_my_work_items",
   list_backlogs: "wit_list_backlogs",
   list_backlog_work_items: "wit_list_backlog_work_items",
@@ -62,6 +66,169 @@ function getLinkTypeFromName(name: string) {
 }
 
 function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<AccessToken>, connectionProvider: () => Promise<WebApi>, userAgentProvider: () => string) {
+
+  // Get all attachments for a work item
+  server.tool(
+    WORKITEM_TOOLS.get_attachments,
+    "Retrieves all attachments for a specific work item.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      workItemId: z.number().describe("The ID of the work item."),
+    },
+    async ({ project, workItemId }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const workItem = await workItemApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, project);
+        const attachments = (workItem.relations || []).filter((rel) => rel.rel === "AttachedFile");
+        if (!attachments.length) {
+          return { content: [{ type: "text", text: "No attachments found for the specified work item." }], isError: true };
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify({ attachments: attachments.map(att => ({ name: att.attributes?.name || "attachment.bin", url: att.url })) }, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error getting attachments: ${error instanceof Error ? error.message : "Unknown error occurred"}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Download all attachments for a work item to the user's Downloads folder
+  server.tool(
+    WORKITEM_TOOLS.download_work_item_attachments,
+    "Downloads all attachments for a specific work item to the user's Downloads folder.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      workItemId: z.number().describe("The ID of the work item."),
+    },
+    async ({ project, workItemId }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const accessToken = await tokenProvider();
+        const workItem = await workItemApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, project);
+        const attachments = (workItem.relations || []).filter((rel) => rel.rel === "AttachedFile");
+        if (!attachments.length) {
+          return { content: [{ type: "text", text: "No attachments found for the specified work item." }], isError: true };
+        }
+        const os = await import("os");
+        const fs = await import("fs/promises");
+        const path = await import("path");
+        const downloadsFolder = path.join(os.homedir(), "Downloads");
+        await fs.mkdir(downloadsFolder, { recursive: true });
+        const downloadedFiles: string[] = [];
+        for (const att of attachments) {
+          const url = att.url ?? "";
+          if (!url) continue;
+          const filename = att.attributes?.name || "attachment.bin";
+          const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken.token}` } });
+          if (!res.ok) {
+            return { content: [{ type: "text", text: `Failed to download attachment: ${filename}` }], isError: true };
+          }
+          const buffer = Buffer.from(await res.arrayBuffer());
+          const filePath = path.join(downloadsFolder, filename);
+          await fs.writeFile(filePath, buffer);
+          downloadedFiles.push(filePath.replace(/\\/g, "/"));
+        }
+        return { content: [{ type: "text", text: JSON.stringify({ downloaded_files: downloadedFiles }, null, 2) }] };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error downloading attachments: ${error instanceof Error ? error.message : "Unknown error occurred"}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Upload an attachment to a work item from a file path
+  server.tool(
+    WORKITEM_TOOLS.upload_attachment_from_path,
+    "Uploads an attachment to a specific work item from a file path.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      workItemId: z.number().describe("The ID of the work item."),
+      filePath: z.string().describe("Full path to the file to upload."),
+    },
+    async ({ project, workItemId, filePath }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const fs = await import("fs");
+        const path = await import("path");
+        const cleanedPath = filePath.replace(/^"|"$/g, "");
+        const normalizedPath = path.normalize(cleanedPath);
+        if (!fs.existsSync(normalizedPath)) {
+          return { content: [{ type: "text", text: `File not found: ${normalizedPath}` }], isError: true };
+        }
+        const fileName = path.basename(normalizedPath);
+        const fileStream = fs.createReadStream(normalizedPath);
+        // createAttachment: (uploadStream: NodeJS.ReadableStream, project: string, fileName?: string, uploadType?: string)
+        const attachmentRef = await workItemApi.createAttachment(null, fileStream, fileName, "application/octet-stream", project);
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/relations/-",
+            value: {
+              rel: "AttachedFile",
+              url: attachmentRef.url,
+              attributes: { comment: "Uploaded via MCP server" },
+            },
+          },
+        ];
+        // updateWorkItem(patchDocument, id, project?, validateOnly?, bypassRules?, suppressNotifications?, expand?)
+        await workItemApi.updateWorkItem(null, patchDocument, workItemId, project);
+        return {
+          content: [{ type: "text", text: JSON.stringify({ message: "Attachment uploaded successfully.", attachment_url: attachmentRef.url, file_name: fileName, work_item_id: workItemId }, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error uploading attachment: ${error instanceof Error ? error.message : "Unknown error occurred"}` }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // Delete an attachment from a work item
+  server.tool(
+    WORKITEM_TOOLS.delete_attachment,
+    "Deletes an attachment from a specific work item.",
+    {
+      project: z.string().describe("The name or ID of the Azure DevOps project."),
+      workItemId: z.number().describe("The ID of the work item."),
+      attachmentId: z.string().describe("The ID or URL fragment of the attachment to delete."),
+    },
+    async ({ project, workItemId, attachmentId }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const workItem = await workItemApi.getWorkItem(workItemId, undefined, undefined, WorkItemExpand.Relations, project);
+        const relations = workItem.relations || [];
+        let patchDocument = [];
+        for (let i = 0; i < relations.length; i++) {
+          const rel = relations[i];
+          if (rel.rel === "AttachedFile" && rel.url && rel.url.includes(attachmentId)) {
+            patchDocument.push({ op: "remove", path: `/relations/${i}` });
+            break;
+          }
+        }
+        if (!patchDocument.length) {
+          return { content: [{ type: "text", text: "Attachment not found in work item." }], isError: true };
+        }
+        // updateWorkItem(patchDocument, id, project?, validateOnly?, bypassRules?, suppressNotifications?, expand?)
+        await workItemApi.updateWorkItem(null, patchDocument, workItemId, project);
+        return { content: [{ type: "text", text: "Attachment removed successfully." }] };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error deleting attachment: ${error instanceof Error ? error.message : "Unknown error occurred"}` }],
+          isError: true,
+        };
+      }
+    }
+  );
   server.tool(
     WORKITEM_TOOLS.list_backlogs,
     "Revieve a list of backlogs for a given project and team.",

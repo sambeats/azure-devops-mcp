@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "baseUrl": ".",
+    "module": "CommonJS",
+    "isolatedModules": false,
+    "types": ["jest", "node"],
+    "paths": {
+      "@modules/*": ["src/modules/*"],
+      "@tools/*": ["src/tools/*"],
+      "@config/*": ["src/config/*"],
+      "@utils": ["src/utils.js"]
+    }
+  },
+  "include": ["./src/**/*", "./test/**/*"],
+  "exclude": ["node_modules", "dist", "docs"]
+}

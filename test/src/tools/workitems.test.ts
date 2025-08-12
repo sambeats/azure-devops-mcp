@@ -37,6 +37,9 @@ interface WorkItemTrackingApiMock {
   getWorkItemType: jest.Mock;
   getQuery: jest.Mock;
   queryById: jest.Mock;
+  getAttachment: jest.Mock;
+  getAttachmentContent: jest.Mock;
+  createAttachment: jest.Mock;
 }
 
 interface MockConnection {
@@ -76,6 +79,9 @@ describe("configureWorkItemTools", () => {
       getWorkItemType: jest.fn(),
       getQuery: jest.fn(),
       queryById: jest.fn(),
+      getAttachment: jest.fn(),
+      getAttachmentContent: jest.fn(),
+      createAttachment: jest.fn(),
     };
 
     mockConnection = {
@@ -2316,6 +2322,375 @@ describe("configureWorkItemTools", () => {
 
       expect(result.content[0].text).toBe("Error creating child work items: Unknown error occurred");
       expect(result.isError).toBe(true);
+    });
+  });
+
+  describe("get_attachments tool", () => {
+    it("should call getAttachments API with the correct parameters and return the expected result", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_attachments");
+      if (!call) throw new Error("wit_get_attachments tool not registered");
+      const [, , , handler] = call;
+
+      const mockAttachments = [
+        {
+          id: "123e4567-e89b-12d3-a456-426614174000",
+          url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+          fileName: "test-file.txt",
+          size: 1024,
+          createdDate: "2023-01-01T10:00:00Z",
+          createdBy: {
+            displayName: "John Doe",
+            uniqueName: "john.doe@example.com",
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue({
+        id: 123,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+            attributes: {
+              name: "test-file.txt",
+              resourceSize: 1024,
+              resourceCreatedDate: "2023-01-01T10:00:00Z",
+              authorizedDate: "2023-01-01T10:00:00Z",
+            },
+          },
+        ],
+      });
+
+      (mockWorkItemTrackingApi.getAttachment as jest.Mock).mockResolvedValue({
+        id: "123e4567-e89b-12d3-a456-426614174000",
+        url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+        fileName: "test-file.txt",
+      });
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+      };
+
+      const result = await handler(params);
+
+      expect(mockWorkItemTrackingApi.getWorkItem).toHaveBeenCalledWith(123, undefined, undefined, 1, "Contoso");
+      expect(result.content[0].text).toContain("test-file.txt");
+    });
+
+    it("should handle work item with no attachments", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_attachments");
+      if (!call) throw new Error("wit_get_attachments tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue({
+        id: 123,
+        relations: null,
+      });
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+      };
+
+      const result = await handler(params);
+
+      expect(result.content[0].text).toBe("No attachments found for the specified work item.");
+      expect(result.isError).toBe(true);
+    });
+
+    it("should handle API errors gracefully", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_attachments");
+      if (!call) throw new Error("wit_get_attachments tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockRejectedValue(new Error("Work item not found"));
+
+      const params = {
+        project: "Contoso",
+        workItemId: 999,
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error getting attachments: Work item not found");
+    });
+  });
+
+  describe("download_work_item_attachments tool", () => {
+    it("should handle download error", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_download_work_item_attachments");
+      if (!call) throw new Error("wit_download_work_item_attachments tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue({
+        id: 123,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+            attributes: {
+              name: "test-file.txt",
+            },
+          },
+        ],
+      });
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+      };
+
+      const result = await handler(params);
+
+      expect(result.content[0].text).toContain("Error downloading attachments:");
+    });
+
+    it("should handle work item with no attachments", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_download_work_item_attachments");
+      if (!call) throw new Error("wit_download_work_item_attachments tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue({
+        id: 123,
+        relations: null,
+      });
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+      };
+
+      const result = await handler(params);
+
+      expect(result.content[0].text).toBe("No attachments found for the specified work item.");
+    });
+  });
+
+  describe("upload_attachment_from_path tool", () => {
+    it("should handle file not found error", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_upload_attachment_from_path");
+      if (!call) throw new Error("wit_upload_attachment_from_path tool not registered");
+      const [, , , handler] = call;
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        filePath: "/non/existent/file.txt",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("File not found: \\non\\existent\\file.txt");
+    });
+
+    it("should handle createAttachment API failure", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_upload_attachment_from_path");
+      if (!call) throw new Error("wit_upload_attachment_from_path tool not registered");
+      const [, , , handler] = call;
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        filePath: "/path/to/test-file.txt",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("File not found: \\path\\to\\test-file.txt");
+    });
+  });
+
+  describe("delete_attachment tool", () => {
+    it("should delete an attachment by ID", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_delete_attachment");
+      if (!call) throw new Error("wit_delete_attachment tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithAttachment = {
+        id: 123,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+            attributes: {
+              name: "test-file.txt",
+            },
+          },
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/456e7890-e89b-12d3-a456-426614174001",
+            attributes: {
+              name: "other-file.txt",
+            },
+          },
+        ],
+      };
+
+      const mockUpdatedWorkItem = {
+        id: 123,
+        rev: 6,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/456e7890-e89b-12d3-a456-426614174001",
+            attributes: {
+              name: "other-file.txt",
+            },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithAttachment);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(mockUpdatedWorkItem);
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        attachmentId: "123e4567-e89b-12d3-a456-426614174000",
+      };
+
+      const result = await handler(params);
+
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(
+        null,
+        [{ op: "remove", path: "/relations/0" }],
+        123,
+        "Contoso"
+      );
+
+      expect(result.content[0].text).toContain("Attachment removed successfully.");
+    });
+
+    it("should handle attachment not found", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_delete_attachment");
+      if (!call) throw new Error("wit_delete_attachment tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithAttachment = {
+        id: 123,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/456e7890-e89b-12d3-a456-426614174001",
+            attributes: {
+              name: "other-file.txt",
+            },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithAttachment);
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        attachmentId: "123e4567-e89b-12d3-a456-426614174000", // This ID doesn't exist
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Attachment not found in work item.");
+    });
+
+    it("should handle work item with no attachments", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_delete_attachment");
+      if (!call) throw new Error("wit_delete_attachment tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue({
+        id: 123,
+        relations: null,
+      });
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        attachmentId: "123e4567-e89b-12d3-a456-426614174000",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Attachment not found in work item.");
+    });
+
+    it("should handle updateWorkItem API failure", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_delete_attachment");
+      if (!call) throw new Error("wit_delete_attachment tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithAttachment = {
+        id: 123,
+        relations: [
+          {
+            rel: "AttachedFile",
+            url: "https://dev.azure.com/contoso/_apis/wit/attachments/123e4567-e89b-12d3-a456-426614174000",
+            attributes: {
+              name: "test-file.txt",
+            },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithAttachment);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockRejectedValue(new Error("Delete failed"));
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        attachmentId: "123e4567-e89b-12d3-a456-426614174000",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error deleting attachment: Delete failed");
+    });
+
+    it("should handle missing both attachmentId and urlFragment", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_delete_attachment");
+      if (!call) throw new Error("wit_delete_attachment tool not registered");
+      const [, , , handler] = call;
+
+      const params = {
+        project: "Contoso",
+        workItemId: 123,
+        // attachmentId is required but not provided, which will cause an error
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error deleting attachment: Cannot read properties of undefined (reading 'relations')");
     });
   });
 });
